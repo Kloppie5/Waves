@@ -1,6 +1,5 @@
 use eframe::egui;
-use egui::Color32;
-use egui_plot::{Legend, Line, Plot, PlotPoints};
+use egui::{Color32, Pos2, Stroke};
 use rand::Rng;
 
 struct FunctionEntry {
@@ -10,95 +9,168 @@ struct FunctionEntry {
 
 struct GraphApp {
     functions: Vec<FunctionEntry>,
+    rot_x: f64,
+    rot_y: f64,
+    zoom: f64,
 }
 
 impl Default for GraphApp {
     fn default() -> Self {
         Self {
             functions: vec![FunctionEntry {
-                formula: "sin(x)".to_string(),
+                formula: "sin(x) * cos(y)".to_string(),
                 color: random_color(),
             }],
+            rot_x: 0.6,
+            rot_y: 0.8,
+            zoom: 100.0,
         }
     }
 }
 
 impl eframe::App for GraphApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Graphing Calculator");
+        egui::SidePanel::left("controls").show(ctx, |ui| {
+            ui.heading("Functions");
 
             if ui.button("Add Function").clicked() {
                 self.functions.push(FunctionEntry {
-                    formula: "x".to_string(),
+                    formula: "sin(x*y)".to_string(),
                     color: random_color(),
                 });
             }
 
+            ui.add(egui::Slider::new(&mut self.rot_x, 0.0..=6.28).text("Rot X"));
+            ui.add(egui::Slider::new(&mut self.rot_y, 0.0..=6.28).text("Rot Y"));
+            ui.add(egui::Slider::new(&mut self.zoom, 20.0..=400.0).text("Zoom"));
+
             ui.separator();
 
-            let mut remove_index = None;
+            let mut remove = None;
 
-            for (i, func) in self.functions.iter_mut().enumerate() {
+            for (i, f) in self.functions.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
                     ui.label(format!("f{}:", i + 1));
+                    ui.text_edit_singleline(&mut f.formula);
 
-                    ui.label("Formula:");
-                    ui.text_edit_singleline(&mut func.formula);
-
-                    ui.color_edit_button_srgba(&mut func.color);
+                    ui.color_edit_button_srgba(&mut f.color);
 
                     if ui.button("❌").clicked() {
-                        remove_index = Some(i);
+                        remove = Some(i);
                     }
                 });
             }
 
-            if let Some(i) = remove_index {
+            if let Some(i) = remove {
                 self.functions.remove(i);
             }
+        });
 
-            ui.separator();
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let rect = ui.available_rect_before_wrap();
+            let center = rect.center();
+            let painter = ui.painter();
 
-            Plot::new("plot")
-                .legend(Legend::default())
-                .view_aspect(2.0)
-                .show(ui, |plot_ui| {
-                    for (i, func) in self.functions.iter().enumerate() {
-                        if let Some(points) = generate_points(&func.formula) {
-                            let label = if i == 0 {
-                                "f(x)".to_string()
-                            } else {
-                                format!("f{}(x)", i + 1)
-                            };
+            draw_axis(painter, center, (0.0, 0.0, 0.0), (2.0, 0.0, 0.0), self.rot_x, self.rot_y, self.zoom, Color32::RED);
+            draw_axis(painter, center, (0.0, 0.0, 0.0), (0.0, 2.0, 0.0), self.rot_x, self.rot_y, self.zoom, Color32::GREEN);
+            draw_axis(painter, center, (0.0, 0.0, 0.0), (0.0, 0.0, 2.0), self.rot_x, self.rot_y, self.zoom, Color32::BLUE);
 
-                            plot_ui.line(
-                                Line::new(points)
-                                    .color(func.color)
-                                    .name(label),
-                            );
-                        }
-                    }
-                });
+            for func in &self.functions {
+                draw_function(
+                    painter,
+                    center,
+                    &func.formula,
+                    func.color,
+                    self.rot_x,
+                    self.rot_y,
+                    self.zoom,
+                );
+            }
         });
     }
 }
 
-fn generate_points(formula: &str) -> Option<PlotPoints> {
-    let expr = formula.parse::<meval::Expr>().ok()?;
-    let func = expr.bind("x").ok()?;
+fn project(x: f64, y: f64, z: f64, rx: f64, ry: f64, zoom: f64) -> Pos2 {
+    let (sy, cy) = ry.sin_cos();
+    let x1 = cy * x + sy * z;
+    let z1 = -sy * x + cy * z;
 
-    let mut points = Vec::new();
+    let (sx, cx) = rx.sin_cos();
+    let y1 = cx * y - sx * z1;
 
-    for i in -100..100 {
-        let x = i as f64 * 0.1;
-        let y = func(x);
-        if y.is_finite() {
-            points.push([x, y]);
+    let scale = 1.0 / (1.0 + z1 * 0.2);
+
+    Pos2::new(
+        (x1 * zoom * scale) as f32,
+        (y1 * zoom * scale) as f32,
+    )
+}
+
+fn draw_function(
+    painter: &egui::Painter,
+    center: Pos2,
+    formula: &str,
+    color: Color32,
+    rx: f64,
+    ry: f64,
+    zoom: f64,
+) {
+    let expr = match formula.parse::<meval::Expr>() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let func = match expr.bind2("x", "y") {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+
+    for xi in -40..40 {
+        for yi in -40..40 {
+            let x = xi as f64 * 0.2;
+            let y = yi as f64 * 0.2;
+            let z = func(x, y);
+
+            if z.is_finite() {
+                let p = project(x, y, z, rx, ry, zoom);
+                painter.circle_filled(center + p.to_vec2(), 1.5, color);
+            }
         }
     }
+}
 
-    Some(points.into())
+fn draw_axis(
+    painter: &egui::Painter,
+    center: Pos2,
+    start: (f64, f64, f64),
+    end: (f64, f64, f64),
+    rx: f64,
+    ry: f64,
+    zoom: f64,
+    color: Color32,
+) {
+    let steps = 50;
+
+    let mut prev: Option<Pos2> = None;
+
+    for i in 0..=steps {
+        let t = i as f64 / steps as f64;
+
+        let x = start.0 + (end.0 - start.0) * t;
+        let y = start.1 + (end.1 - start.1) * t;
+        let z = start.2 + (end.2 - start.2) * t;
+
+        let p = project(x, y, z, rx, ry, zoom);
+
+        if let Some(prev_p) = prev {
+            painter.line_segment(
+                [center + prev_p.to_vec2(), center + p.to_vec2()],
+                Stroke::new(2.0, color),
+            );
+        }
+
+        prev = Some(p);
+    }
 }
 
 fn random_color() -> Color32 {
@@ -112,8 +184,9 @@ fn random_color() -> Color32 {
 
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions::default();
+
     eframe::run_native(
-        "Graph App",
+        "Waves 3D Engine",
         options,
         Box::new(|_cc| Box::new(GraphApp::default())),
     )
