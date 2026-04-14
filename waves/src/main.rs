@@ -40,10 +40,6 @@ impl eframe::App for GraphApp {
                 });
             }
 
-            ui.add(egui::Slider::new(&mut self.rot_x, 0.0..=6.28).text("Rot X"));
-            ui.add(egui::Slider::new(&mut self.rot_y, 0.0..=6.28).text("Rot Y"));
-            ui.add(egui::Slider::new(&mut self.zoom, 20.0..=400.0).text("Zoom"));
-
             ui.separator();
 
             let mut remove = None;
@@ -70,6 +66,21 @@ impl eframe::App for GraphApp {
             let rect = ui.available_rect_before_wrap();
             let center = rect.center();
             let painter = ui.painter();
+
+            let response = ui.interact(
+                ui.available_rect_before_wrap(),
+                egui::Id::new("canvas"),
+                egui::Sense::drag(),
+            );
+            if response.dragged() {
+                let delta = response.drag_delta();
+
+                self.rot_y += delta.x as f64 * 0.01;
+                self.rot_x += delta.y as f64 * 0.01;
+            }
+            if let Some(scroll) = ui.input(|i| i.raw_scroll_delta.y as f64).into() {
+                self.zoom *= 1.0 + scroll * 0.001;
+            }
 
             draw_axis(painter, center, (0.0, 0.0, 0.0), (2.0, 0.0, 0.0), self.rot_x, self.rot_y, self.zoom, Color32::RED);
             draw_axis(painter, center, (0.0, 0.0, 0.0), (0.0, 2.0, 0.0), self.rot_x, self.rot_y, self.zoom, Color32::GREEN);
